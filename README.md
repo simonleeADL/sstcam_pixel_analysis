@@ -49,3 +49,13 @@ The following options are also available:
 * `--overwrite` which ignore previous extracted charge checkpoints in the same output directory
 * `--max_events` to process only a certain number of events per run (good for quickly testing)
 * `--subtract_baseline` to perform a rudimentary background subtraction based on the average of the first 5 samples (does not do much)
+
+Also available as individual functions are:
+```
+sstcam-pixel-analysis spe
+```
+and
+```
+sstcam-pixel-analysis charge-res
+```
+with syntax available with `--help`.
