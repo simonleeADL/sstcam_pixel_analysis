@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<style>
+    .monospace {
+        font-family: monospace;
+        white-space: pre-wrap;
+        margin-bottom: 4em;
+    }
+</style>
+</head>
+
+<body>
+<h1>SPE report: {{ pixels_type }} PIXELS</h1>
+
+<h3>Run info:</h3>
+
+{{ run_text }}
+
+<h3>Processing info:</h3>
+
+{{ processing_text }}
+
+<h2>Parameter distributions</h2>
+{{ param_dist }}
+
+<h2>Good/bad pixels map</h2>
+{{ good_pixels }}
+
+<h2>Pixel values map</h2>
+{{ value_map }}
+
+<h2>Fits overview</h2>
+{{ fits_overview }}
+
+<h2>Per-pixel fits</h2>
+{% for pixel_plot, pixel_text in pixels %}
+{{ pixel_plot }}
+<div class="monospace">
+{{ pixel_text }}
+</div>
+{% endfor %}
+
+</body>
+</html>

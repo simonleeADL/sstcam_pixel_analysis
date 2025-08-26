@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["sstcam_pixel_analysis"]
+
+[tool.setuptools.package-data]
+sstcam_analysis = ["*.csv","*.yaml"]
+
+[project]
+name = "sstcam-analysis"
+version = "0.2025.08.26"
+description = "Analyse SSTCAM lab data with SPE fitting and charge resolution plotting."
+dependencies = [
+"ctapipe ~=0.22.0",
+"astropy",
+"Jinja2",
+"joblib",
+"matplotlib",
+"numpy",
+"pandas",
+"plotly",
+"PyYAML",
+"tqdm"
+]
+readme = "README.md"
+
+[project.scripts]
+sstcam-pixel-analysis = "sstcam_pixel_analysis.cli:main"
