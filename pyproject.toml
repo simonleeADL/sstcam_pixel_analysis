@@ -9,7 +9,7 @@ packages = ["sstcam_pixel_analysis"]
 sstcam_analysis = ["*.csv","*.yaml"]
 
 [project]
-name = "sstcam-analysis"
+name = "sstcam-pixel-analysis"
 version = "0.2025.08.26"
 description = "Analyse SSTCAM lab data with SPE fitting and charge resolution plotting."
 dependencies = [
