@@ -18,9 +18,9 @@ The following requirements should be installed first manually. The rest of the r
     * [`cmake`](https://cmake.org/)
     * [`pip`](https://pypi.org/project/pip/)
     * [`cfitsio`](https://heasarc.gsfc.nasa.gov/fitsio/) ([see install script](https://gitlab.cta-observatory.org/cta-array-elements/sst/camera/server/sstcam-server/-/blob/develop/env/install-cfitsio.sh))
-  * [`sstcam-telecom`](https://gitlab.cta-observatory.org/cta-array-elements/sst/camera/server/sstcam-server.git#egg=sstcam_telecom&subdirectory=sstcam-telecom)
+  * [`sstcam-telecom`](https://gitlab.cta-observatory.org/cta-array-elements/sst/camera/server/sstcam-server/-/tree/develop/sstcam-telecom)
     * [`corel-asyncio`](https://gitlab.desy.de/corel/corel-asyncio)
-  * [`sstcam-configuration`](https://gitlab.cta-observatory.org/cta-array-elements/sst/camera/server/sstcam-server/-/tree/develop/sstcam-telecom)
+  * [`sstcam-configuration`](https://gitlab.cta-observatory.org/cta-array-elements/sst/camera/server/sstcam-server/-/tree/develop/sstcam-configuration)
 * [`spefit`](https://gitlab.cta-observatory.org/cta-consortium/aswg/tools/spefit)
 ```
 pip install 'git+https://gitlab.cta-observatory.org/cta-consortium/aswg/tools/spefit.git#egg=spefit'
