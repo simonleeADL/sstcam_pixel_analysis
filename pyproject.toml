@@ -13,7 +13,7 @@ name = "sstcam-pixel-analysis"
 version = "0.2025.08.26"
 description = "Analyse SSTCAM lab data with SPE fitting and charge resolution plotting."
 dependencies = [
-"ctapipe ~=0.22.0",
+"ctapipe >=0.28.0",
 "astropy",
 "Jinja2",
 "joblib",
