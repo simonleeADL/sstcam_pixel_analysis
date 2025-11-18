@@ -351,7 +351,7 @@ def initialise_lab_data(filename,args):
 
     for event in source:
         break
-    dead_pixels_mask = event.mon.tel[tel_id].pixel_status.hardware_failing_pixels[0]
+    dead_pixels_mask = event.r1.tel[tel_id].pixel_status == False
 
     baseline_correction, peak_indexes_all, off_pixels = get_base_peak(
         source, tel_id, max_events
