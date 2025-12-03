@@ -6,7 +6,10 @@ It is build atop [`spefit`](https://gitlab.cta-observatory.org/cta-consortium/as
 This code is still in early development, and I have much to learn before it's ready for widespread use.
 
 ## Installation
-Clone, and when in the directory, install with `pip install .`
+
+[Here is a link](installation_walkthrough.md) to a detailed walkthrough for how to install sstcam_pixel_analysis.
+
+Once requirements are installed, simply clone, and when in the directory, install with `pip install .`
 
 ### Requirements
 
