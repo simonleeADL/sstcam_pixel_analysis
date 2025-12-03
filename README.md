@@ -12,15 +12,24 @@ Clone, and when in the directory, install with `pip install .`
 
 The following requirements should be installed first manually. The rest of the requirements, which are installed automatically, can be found in `pyproject.toml`.
 
+* [`git-lfs`](https://git-lfs.github.com/)
+* [`cmake`](https://cmake.org/)
+* [`pip`](https://pypi.org/project/pip/)
+* [`cfitsio`](https://heasarc.gsfc.nasa.gov/fitsio/) ([see install script](https://gitlab.cta-observatory.org/cta-array-elements/sst/camera/server/sstcam-server/-/blob/develop/env/install-cfitsio.sh))
+* [`corel-asyncio`](https://gitlab.desy.de/corel/corel-asyncio)
+
+Required for:
+
+* [`sstcam-waveform`](https://gitlab.cta-observatory.org/cta-array-elements/sst/camera/server/sstcam-server/-/tree/develop/sstcam-waveform)
+* [`sstcam-telecom`](https://gitlab.cta-observatory.org/cta-array-elements/sst/camera/server/sstcam-server/-/tree/develop/sstcam-telecom)
+* [`sstcam-configuration`](https://gitlab.cta-observatory.org/cta-array-elements/sst/camera/server/sstcam-server/-/tree/develop/sstcam-configuration)
+
+Required for:
+
 * [`ctapipe_io_sstcam`](https://gitlab.cta-observatory.org/cta-array-elements/sst/camera/analysis/ctapipe_io_sstcam)
-  * [`sstcam-waveform`](https://gitlab.cta-observatory.org/cta-array-elements/sst/camera/server/sstcam-server/-/tree/develop/sstcam-waveform)
-    * [`git-lfs`](https://git-lfs.github.com/)
-    * [`cmake`](https://cmake.org/)
-    * [`pip`](https://pypi.org/project/pip/)
-    * [`cfitsio`](https://heasarc.gsfc.nasa.gov/fitsio/) ([see install script](https://gitlab.cta-observatory.org/cta-array-elements/sst/camera/server/sstcam-server/-/blob/develop/env/install-cfitsio.sh))
-  * [`sstcam-telecom`](https://gitlab.cta-observatory.org/cta-array-elements/sst/camera/server/sstcam-server/-/tree/develop/sstcam-telecom)
-    * [`corel-asyncio`](https://gitlab.desy.de/corel/corel-asyncio)
-  * [`sstcam-configuration`](https://gitlab.cta-observatory.org/cta-array-elements/sst/camera/server/sstcam-server/-/tree/develop/sstcam-configuration)
+
+Then also:
+
 * [`spefit`](https://gitlab.cta-observatory.org/cta-consortium/aswg/tools/spefit)
 ```
 pip install 'git+https://gitlab.cta-observatory.org/cta-consortium/aswg/tools/spefit.git#egg=spefit'
@@ -41,14 +50,13 @@ The processing runs in parallel, and unfortunately cannot show a progress bar. O
 
 The following options are also available:
 
-* `-p` is the initial guess for extracted photoelectron charge (defaults to 30, which should work fine for now)
-* `-w` is the number of samples you want to use for the extraction (defaults to 12)
-* `--solo_pixels` to be used on one-pixel-per-ASIC runs, where pixels with negligible signal should be ignored
-* `--fix_time_skew` to choose extraction peaks on a per-pixel basis
+* `-p` is the initial guess for extracted photoelectron charge (default automatically choosen depending on window width)
+* `-w` is the number of samples you want to use for the extraction (defaults to 16)
+* `--leave_time_skew` to *not* choose extraction peaks on a per-pixel basis
+* `--leave_baseline` to *not* perform a rudimentary background subtraction based on the average of the first 5 samples (does not do much)
 * `--peak_helper` to plot the SPE distributions across all pixels to get an idea of p.e. size
 * `--overwrite` which ignore previous extracted charge checkpoints in the same output directory
 * `--max_events` to process only a certain number of events per run (good for quickly testing)
-* `--subtract_baseline` to perform a rudimentary background subtraction based on the average of the first 5 samples (does not do much)
 
 Also available as individual functions are:
 ```

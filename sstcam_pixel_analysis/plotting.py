@@ -3,25 +3,28 @@ from pathlib import Path
 
 import numpy as np
 import plotly.graph_objects as go
-from ctapipe_io_sstcam import SSTCAMEventSource
+import yaml
 from plotly.colors import sample_colorscale
 from plotly.subplots import make_subplots
 from tqdm import tqdm
 
+from ctapipe_io_sstcam import SSTCAMEventSource
+
+from .utilities import fmt, format_hz, get_pixel_info, requirement, get_source
 from .processing import calc_charge_res
-from .utilities import fmt, format_hz, get_pixel_info
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-X_POISS = 10 ** np.arange(-1, 3.5, 0.1)
-Y_POISS = calc_charge_res(X_POISS, X_POISS, poisson=True)
+with open(f"{SCRIPT_DIR}/config.yaml", "r") as _f:
+    _cfg = yaml.safe_load(_f)
 
-req = np.loadtxt(f"{SCRIPT_DIR}/charge_res_req.csv", delimiter=",", skiprows=1)
-X_REQ = req[:, 0]
-Y_REQ_RAW = req[:, 1]
+PDE = _cfg["PDE"]
 
-REQ_FIT = np.poly1d(np.polyfit(np.log10(X_REQ), np.log10(Y_REQ_RAW), 3))
-Y_REQ = 10 ** REQ_FIT(np.log10(X_REQ))
+X_POISS = 10 ** np.arange(np.log10(0.3), np.log10(700), 0.1)
+Y_POISS = 1 / np.sqrt(X_POISS / PDE)
+
+X_REQ = X_POISS
+Y_REQ = requirement(X_REQ / PDE)
 
 
 def plot_charge_res(df):
@@ -33,19 +36,30 @@ def plot_charge_res(df):
 
     Returns:
         fig: Plotly HTML figure
-    """    
+    """
     fig = go.Figure()
 
-    fig.add_trace(
-        go.Scatter(
-            x=X_REQ,
-            y=Y_REQ,
-            mode="lines",
-            line=dict(color="black", dash="dash"),
-            name="Requirement",
-            hoverinfo="name",
+    unique_nsbs = sorted(df["nsb"].unique())
+    n_nsbs = len(unique_nsbs)
+    if n_nsbs == 1:
+        cmap = sample_colorscale("Plasma", [0])
+    else:
+        cmap = sample_colorscale("Plasma", [0.9*i / (n_nsbs - 1) for i in range(n_nsbs)])
+    
+    for color, nsb_val in zip(cmap, unique_nsbs):
+        y_req = requirement(X_REQ / PDE,nsb=PDE*nsb_val/1e9)
+        fig.add_trace(
+            go.Scatter(
+                x=X_REQ,
+                y=y_req,
+                mode="lines",
+                line=dict(color=color, dash="dash"),
+                name=f"Requirement (NSB: {format_hz(nsb_val)})",
+                hoverinfo="name",
+            )
         )
-    )
+
+
     fig.add_trace(
         go.Scatter(
             x=X_POISS,
@@ -56,13 +70,6 @@ def plot_charge_res(df):
             hoverinfo="name",
         )
     )
-
-    unique_nsbs = sorted(df["nsb"].unique())
-    n_nsbs = len(unique_nsbs)
-    if n_nsbs == 1:
-        cmap = sample_colorscale("Plasma", [0])
-    else:
-        cmap = sample_colorscale("Plasma", [i / (n_nsbs - 1) for i in range(n_nsbs)])
 
     for color, nsb_val in zip(cmap, unique_nsbs):
         sub = df[df["nsb"] == nsb_val]
@@ -85,7 +92,7 @@ def plot_charge_res(df):
         )
 
     fig.update_layout(
-        width=700,
+        width=800,
         height=500,
         plot_bgcolor="white",
         xaxis=dict(
@@ -104,32 +111,34 @@ def plot_charge_res(df):
             linecolor="black",
             mirror=True,
         ),
-        legend=dict(x=0.01, y=0.01, xanchor="left", yanchor="bottom"),
+        legend=dict(
+            x=1.02,
+            y=1,
+            xanchor="left",
+            yanchor="top",
+            bordercolor="black",
+        ),
         margin=dict(l=60, r=20, t=20, b=60),
     )
 
     return fig.to_html(full_html=False, include_plotlyjs="cdn")
 
-
-def plot_charge_res_relative(df):
+def plot_charge_res_relative(df_2d):
     """
-    Plot relative charge resolution scaled to CTAO requirement vs expected charge
-
-    Args:
-        df (pandas DataFrame): DF of extracted charges
-
-    Returns:
-        fig: Plotly HTML figure
-    """    
-    def y_relative(x, y, fit):
-        return y / 10 ** fit(np.log10(x))
+    Plot relative charge resolution scaled to CTAO requirement vs expected charge.
+    For each NSB: 
+        - Solid markers for combined NSB data
+        - Transparent lines for each pixel
+    """
+    def y_relative(x, y, nsb_val):
+        return y / requirement(x / PDE,nsb=PDE*nsb_val/1e9)
 
     fig = go.Figure()
 
     fig.add_trace(
         go.Scatter(
             x=X_REQ,
-            y=y_relative(X_REQ, Y_REQ, REQ_FIT),
+            y=[1]*len(X_POISS),
             mode="lines",
             line=dict(color="black", dash="dash"),
             name="Requirement",
@@ -137,30 +146,73 @@ def plot_charge_res_relative(df):
         )
     )
 
-    fig.add_trace(
-        go.Scatter(
-            x=X_POISS,
-            y=y_relative(X_POISS, Y_POISS, REQ_FIT),
-            mode="lines",
-            line=dict(color="grey", dash="dash"),
-            name="Poisson",
-            hoverinfo="name",
-        )
-    )
-
-    unique_nsbs = sorted(df["nsb"].unique())
+    unique_nsbs = sorted(df_2d["nsb"].unique())
     n_nsbs = len(unique_nsbs)
     if n_nsbs == 1:
         cmap = sample_colorscale("Plasma", [0])
     else:
-        cmap = sample_colorscale("Plasma", [i / (n_nsbs - 1) for i in range(n_nsbs)])
-
+        cmap = sample_colorscale("Plasma", [0.9*i / (n_nsbs - 1) for i in range(n_nsbs)])
+    
     for color, nsb_val in zip(cmap, unique_nsbs):
-        sub = df[df["nsb"] == nsb_val]
+
         fig.add_trace(
             go.Scatter(
-                x=sub["expected_pe"],
-                y=y_relative(sub["expected_pe"], sub["charge_res"], REQ_FIT),
+                x=X_POISS,
+                y=y_relative(X_POISS, Y_POISS, nsb_val),
+                mode="lines",
+                line=dict(color=color, dash="dash"),
+                name=f"Poisson (NSB: {format_hz(nsb_val)})",
+                hoverinfo="name",
+            )
+        )
+    
+    for color, nsb_val in zip(cmap, unique_nsbs):
+
+        sub_nsb = df_2d[df_2d["nsb"] == nsb_val]
+
+        # --- Plot pixel lines ---
+        legend_name = "Individual pixels"
+
+        unique_pix = sorted(sub_nsb["pixel_id"].unique())
+        for pix_id in unique_pix:
+            sub_pix = sub_nsb[sub_nsb["pixel_id"] == pix_id]
+            xax = sorted(sub_pix["expected_pe"].unique())
+            yax = [calc_charge_res(sub_pix[sub_pix['expected_pe'] == pe]["extracted_pe"], pe) 
+                   for pe in xax]
+            
+            show_legend = bool((pix_id == unique_pix[0]) and (nsb_val == unique_nsbs[0]))
+
+            rgba_color = color.replace("rgb(", "rgba(").replace(")", f",{np.sqrt(1/len(unique_pix))})")
+            fig.add_trace(
+                go.Scatter(
+                    x=xax,
+                    y=y_relative(np.array(xax), np.array(yax), nsb_val),
+                    mode="lines",
+                    line=dict(color=rgba_color),
+                    legendgroup="pixels",
+                    showlegend=show_legend,
+                    name=legend_name if pix_id == unique_pix[0] else None,
+                    visible="legendonly",
+                    hovertemplate=(
+                        f"Pixel: {pix_id}<br>"
+                        "expected p.e.: %{x}<br>"
+                        "Rel. Resolution: %{y}<extra></extra>"
+                    ),
+                )
+            )
+
+
+        # --- Plot NSB summary markers ---
+        x_summary = sorted(sub_nsb["expected_pe"].unique())
+        y_summary = []
+        for pe in x_summary:
+            sub_pe = sub_nsb[sub_nsb["expected_pe"] == pe]
+            y_summary.append(calc_charge_res(sub_pe["extracted_pe"], pe))
+
+        fig.add_trace(
+            go.Scatter(
+                x=x_summary,
+                y=y_relative(np.array(x_summary), np.array(y_summary), nsb_val),
                 mode="markers",
                 marker=dict(
                     size=9,
@@ -176,9 +228,10 @@ def plot_charge_res_relative(df):
         )
 
     fig.update_layout(
-        width=700,
+        width=800,
         height=500,
         plot_bgcolor="white",
+        showlegend=True,
         xaxis=dict(
             type="log",
             title="Average Expected p.e.",
@@ -193,19 +246,19 @@ def plot_charge_res_relative(df):
             zeroline=False,
             linecolor="black",
             mirror=True,
-            range=[0, 2],
+            range=[0, 1.5],
         ),
         legend=dict(
-            x=0.01,
-            y=0.01,
+            x=1.02,
+            y=1,
             xanchor="left",
-            yanchor="bottom",
+            yanchor="top",
+            bordercolor="black",
         ),
         margin=dict(l=60, r=20, t=20, b=60),
     )
 
     return fig.to_html(full_html=False, include_plotlyjs=False)
-
 
 def plot_dispersion(df_2d):
     """
@@ -216,7 +269,7 @@ def plot_dispersion(df_2d):
 
     Returns:
         fig: Plotly HTML figure
-    """    
+    """
     figures = []
 
     for nsb in tqdm(sorted(df_2d["nsb"].unique()), desc="Saving plots"):
@@ -252,14 +305,16 @@ def plot_dispersion(df_2d):
 
         one_line = go.Scatter(
             x=xbins,
-            y=1/xbins,
+            y=1 / xbins,
             mode="lines",
             line=dict(color="grey", dash="dot"),
             name="Extracted = 1",
         )
 
         mean_points = (
-            sub.groupby("expected_pe")
+            sub.groupby("expected_pe")[
+                ["extracted_pe", "expected_pe"]
+            ]  # <-- Select the columns
             .apply(
                 lambda g: (
                     g["expected_pe"].iloc[0],
@@ -663,7 +718,7 @@ def plot_good_pixels(input_file, live_pixels, good_fit_mask, tel_id):
         fig: Plotly HTML figure
     """
 
-    source = SSTCAMEventSource(input_file)
+    source, _ = get_source(input_file, 1)
     geom = source.subarray.tel[tel_id].camera.geometry
 
     image = np.zeros(len(geom.pix_id))
@@ -675,8 +730,8 @@ def plot_good_pixels(input_file, live_pixels, good_fit_mask, tel_id):
 
     colors = {
         0: [0, 0, 0],  # dead (black)
-        1: [0, 0, 255],  # bad (blue)
-        2: [255, 255, 0],  # good (yellow)
+        1: [50, 50, 50],  # bad (dark grey)
+        2: [0, 255, 00],  # good (green)
         "pad": [200, 200, 200],  # padding (grey)
     }
 
@@ -725,7 +780,7 @@ def plot_param_maps(
     Returns:
         fig: Plotly HTML figure
     """
-    source = SSTCAMEventSource(input_file)
+    source, _ = get_source(input_file, 1)
     geom = source.subarray.tel[tel_id].camera.geometry
     live_pixels = np.array(live_pixels)
     include_pix = np.array(include_pix)

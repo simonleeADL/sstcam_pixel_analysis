@@ -1,5 +1,5 @@
+import json
 import os
-
 import threading
 import time
 from dataclasses import dataclass
@@ -25,21 +25,25 @@ from .plotting import (
     plot_value_lists_plotly,
 )
 from .processing import (
+    FileData,
     get_bad_fit_mask,
     get_dataset,
     get_peak_valley_ratios,
-    process_file_charge,
-    initialise_lab_data,
-    FileData,
+    initialise_data,
+    get_pe_charge_res,
+    process_data_charge_res,
 )
 from .utilities import (
+    get_file_info,
     get_processing_text,
     get_run_text_chres,
     get_value_lists,
+    load_calibration,
     output_filenames,
-    write_pixel_spe_table,
     spin,
-    get_file_info,
+    write_pixel_spe_table,
+    get_lookup_charge_res,
+    too_bright,
 )
 
 # Reading in configs from config.yaml
@@ -51,6 +55,7 @@ with open(f"{SCRIPT_DIR}/config.yaml", "r") as _f:
 
 HIST_BINS = _cfg["hist_bins"]
 GOOD_PEAK_RATIO = _cfg["good_peak_ratio"]
+PDE = _cfg["PDE"]
 
 
 def initialise_datasets(args, linear=False):
@@ -70,14 +75,20 @@ def initialise_datasets(args, linear=False):
         base_dir = args.input_dir
         input_files = glob(f"{base_dir}*r1.tio")
         input_files.sort()
+    
+    if hasattr(args, "input_dir"):
+        lk = get_lookup_charge_res(args)
+        for f in input_files.copy():
+            if too_bright(lk,f):
+                input_files.remove(f)
 
     need_to_initialise = False
     for f in input_files:
         if args.overwrite:
             need_to_initialise = True
             break
-        all_charges_file, _, _ = output_filenames(f, args.output_dir)
-        if not os.path.isfile(all_charges_file):
+        all_extracted_adc_file, _, _ = output_filenames(f, args.output_dir)
+        if not os.path.isfile(all_extracted_adc_file):
             need_to_initialise = True
 
     num_files = len(input_files)
@@ -86,7 +97,7 @@ def initialise_datasets(args, linear=False):
         if linear:
             datasets = []
             for f in tqdm(input_files):
-                d = initialise_lab_data(f, args)
+                d = initialise_data(f, args)
                 datasets.append(d)
             return datasets
         else:
@@ -99,7 +110,7 @@ def initialise_datasets(args, linear=False):
 
             try:
                 parallel = Parallel(n_jobs=-1, backend="loky")
-                tasks = (delayed(initialise_lab_data)(f, args) for f in input_files)
+                tasks = (delayed(initialise_data)(f, args) for f in input_files)
                 return list(parallel(tasks))
             finally:
                 done = True
@@ -129,6 +140,8 @@ def get_datasets_spe(datasets, args, lambda_guesses, linear=False):
         list: A list of datasets in FileData class (defined in plotting.py)
     """
     num_files = len(args.input_file)
+
+    linear=True
 
     if lambda_guesses is not None:
         for dataset in datasets:
@@ -198,8 +211,8 @@ def do_fitting_spe(args, datasets):
         pdf=final_pdf, n_bins=HIST_BINS, range_=hist_range, cost_name="BinnedNLL"
     )
 
-    all_charges_datasets = [f.charges for f in datasets]
-    fitter.multiprocess(all_charges_datasets, n_processes=3)
+    all_extracted_adc_datasets = [f.extracted_adc for f in datasets]
+    fitter.multiprocess(all_extracted_adc_datasets, n_processes=3)
 
     n_files = len(datasets)
     value_lists = get_value_lists(fitter, n_files)
@@ -283,7 +296,7 @@ def write_reports_spe(args, datasets, fit):
 
             param_text = get_param_text(ipix, illum_no, include_pix, fit)
 
-            c = datasets[illum_no].charges.T[ipix]
+            c = datasets[illum_no].extracted_adc.T[ipix]
             pixel_plot, pixel_text = plot_fit_plotly(
                 c, fit, param_text, ipix, pix_no, illum_no, HIST_BINS
             )
@@ -327,10 +340,9 @@ def write_reports_spe(args, datasets, fit):
                 spe_report_template = Template(template_file.read())
                 f.write(spe_report_template.render(jinja_data))
 
-
 def get_charge_res_output(datasets, args):
     """
-    Extract the charges of events from dynamic range runs
+    Extract the images of events from dynamic range runs
     and calculate charge resolution.
 
     Args:
@@ -338,66 +350,107 @@ def get_charge_res_output(datasets, args):
 
     Returns:
         df (pandas df): Pandas dataframe of extracted charge resolutions
-        df_2d (pandas df): Pandas dataframe of all extracted charges
+        df_2d (pandas df): Pandas dataframe of all extracted ADC values
         run_text (str): Text description of this run
     """
 
     run_text = get_run_text_chres(datasets[0].filepath)
-    base_dir = args.input_dir
-
-    lk = pd.read_csv(Path(base_dir) / "table.csv")
-    lk["filename"] = lk["name"].apply(lambda s: Path(base_dir) / Path(s).name)
-    lk = lk.set_index("filename")[["n_ph", "n_ph_meas", "nsb_meas", "nsb"]]
+    lk = get_lookup_charge_res(args)
 
     ref_spe = pd.read_csv(args.ref_spe)
     pe_map = ref_spe.set_index("pixel_no")[["pe", "good_fit"]]
 
-    results = []
+    charge_res_results = []
     all_extracted = []
     all_expected = []
+    all_pixel_ids = []
     all_nsb = []
+    nsb_zero = []
 
-    ref_peak_filename = (
-        lk[lk["nsb"] == 0.0].sort_values("n_ph_meas", ascending=False).index[0]
+    for dataset in datasets.copy():
+        filepath = Path(dataset.filepath)
+        n_ph = lk["n_ph_meas"][filepath]
+        nsb = lk["nsb"][filepath]
+        if n_ph > 1200:
+            datasets.remove(dataset)
+        else:
+            if nsb == 0.0:
+                nsb_zero.append(True)
+            else:
+                nsb_zero.append(False)
+    
+    nsb_zero = np.array(nsb_zero)
+
+    parallel_results = Parallel(n_jobs=-1, backend="loky")(
+        delayed(process_data_charge_res)(dataset, args, PDE, lk)
+        for dataset in tqdm(datasets, desc="Processing files")
     )
 
-    for d in datasets:
-        if str(d.filepath) == str(ref_peak_filename):
-            ref_peak_dataset = d
-            break
+    valid_results = [res for res in parallel_results if res is not None]
 
-    for dataset in datasets:
-        dataset.peak_indexes = ref_peak_dataset.peak_indexes
+    datasets = [res[0] for res in valid_results]
+    expected_pe_list = [res[1] for res in valid_results]
+
+    all_mean_extracted_adc = np.array([res[2] for res in valid_results])
+    all_mean_extracted_adc = all_mean_extracted_adc[nsb_zero].T
+    expected_pe_list = np.array(expected_pe_list)
+
+    tf_filepath = args.output_dir + f"/transfer_functions.json"
+
+    if not os.path.exists(tf_filepath) or args.overwrite:
+        cal_data = {}
+        for pix_id, pix_mean_extracted_adc in zip(
+            datasets[0].live_pixels, all_mean_extracted_adc
+        ):
+            y_tf = pix_mean_extracted_adc / expected_pe_list[nsb_zero]
+            x_tf = pix_mean_extracted_adc
+            smooth = np.convolve(y_tf, [0.5, 1, 0.5], mode="same") / np.convolve(
+                np.ones_like(y_tf), [0.5, 1, 0.5], mode="same"
+            )
+            cal_data.setdefault(int(args.window_width), {})[int(pix_id)] = {
+                "extracted_adc": x_tf.tolist(),
+                "adc_per_pe": smooth.tolist(),
+            }
+
+        with open(tf_filepath, "w") as f:
+            json.dump(cal_data, f)
+
+    transfer_function = load_calibration(tf_filepath)
 
     parallel = Parallel(n_jobs=-1, backend="loky")
     output = parallel(
-        delayed(process_file_charge)(dataset, args, pe_map, lk)
-        for dataset in tqdm(datasets, desc="Reading runs")
+        delayed(get_pe_charge_res)(
+            dataset, args, pe_map, expected_pe, transfer_function, lk
+        )
+        for dataset, expected_pe in tqdm(
+            zip(datasets, expected_pe_list), total=len(datasets), desc="Reading runs"
+        )
     )
 
     for out in output:
-        results.append(out["result"])
+        charge_res_results.append(out["result"])
         all_extracted.extend(out["extracted"])
         all_expected.extend(out["expected"])
+        all_pixel_ids.extend(out['pixel_ids'])
         all_nsb.extend(out["nsb"])
 
     df = pd.DataFrame.from_records(
-        results, columns=["expected_pe", "nsb", "filename", "charge_res"]
+        charge_res_results, columns=["expected_pe", "nsb", "filename", "charge_res"]
     )
 
     df_2d = pd.DataFrame(
-        np.column_stack((all_extracted, all_expected, all_nsb)),
-        columns=["extracted_pe", "expected_pe", "nsb"],
+        np.column_stack((all_pixel_ids, all_extracted, all_expected, all_nsb)),
+        columns=["pixel_id","extracted_pe", "expected_pe", "nsb"],
     )
 
     return df, df_2d, run_text
 
 
-def write_report_charge(args, df, df_2d, run_text):
+def write_report_charge_res(args, df, df_2d, run_text):
     """
     Write an HTML report of the extracted charge resolution,
     which is split by induced NSB.
-    Also includes a 2D histogram of expected vs relative extracted charge.
+    Also includes a 2D histogram of expected vs relative extracted p.e.
 
     Args:
         args: Command-line arguments for charge resolution
@@ -417,7 +470,7 @@ def write_report_charge(args, df, df_2d, run_text):
     jinja_data["processing_text"] = get_processing_text(args, mode="res")
 
     jinja_data["charge_res_plot"] = plot_charge_res(df)
-    jinja_data["charge_res_plot_scaled"] = plot_charge_res_relative(df)
+    jinja_data["charge_res_plot_scaled"] = plot_charge_res_relative(df_2d)
     jinja_data["nsb_hists"] = plot_dispersion(df_2d)
 
     report_template = f"{SCRIPT_DIR}/../templates/charge_res_report_template.html"

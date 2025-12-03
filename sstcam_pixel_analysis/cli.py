@@ -6,9 +6,9 @@ from .bulk import (
     do_fitting_spe,
     get_charge_res_output,
     get_datasets_spe,
-    write_report_charge,
+    initialise_datasets,
+    write_report_charge_res,
     write_reports_spe,
-    initialise_datasets
 )
 from .utilities import (
     add_args_both,
@@ -28,9 +28,9 @@ def run_both(parser, args):
 
     run_spe(spe_args, lambda_guesses=lambda_guesses)
 
-    print("=== Charge Resolution ===")
-
-    run_charge_res(charge_args)
+    if not args.peak_helper:
+        print("=== Charge Resolution ===")
+        run_charge_res(charge_args)
 
     if delete_checkpoints:
         print("Deleting checkpoints...")
@@ -43,24 +43,31 @@ def run_charge_res(args, parser=None):
         args = validate_args_charge_res(parser, args=args)
 
     for remove_bad_pixels in [False, True]:
+        args.overwrite
         if remove_bad_pixels:
             print("= Good pixels =")
+            args.overwrite = False
         else:
             print("= All pixels =")
         args.remove_bad_pixels = remove_bad_pixels
+        print("= Initialising data =")
         charge_datasets = initialise_datasets(args)
-        df, df_2d, run_text = get_charge_res_output(charge_datasets,args)
-        write_report_charge(args, df, df_2d, run_text)
+        print("= Processing data =")
+        df, df_2d, run_text = get_charge_res_output(charge_datasets, args)
+        write_report_charge_res(args, df, df_2d, run_text)
 
 
 def run_spe(args, lambda_guesses=None, parser=None):
     if parser is not None:
         args, lambda_guesses = validate_args_spe(parser, args=args)
 
+    print("= Initialising data =")
     datasets = initialise_datasets(args)
+    print("= Processing data =")
     datasets = get_datasets_spe(datasets, args, lambda_guesses)
     if args.peak_helper:
         return None
+    print("= Performing SPE fit =")
     fit = do_fitting_spe(args, datasets)
     write_reports_spe(args, datasets, fit)
 

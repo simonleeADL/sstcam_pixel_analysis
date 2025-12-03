@@ -6,11 +6,11 @@ build-backend = "setuptools.build_meta"
 packages = ["sstcam_pixel_analysis"]
 
 [tool.setuptools.package-data]
-sstcam_analysis = ["*.csv","*.yaml"]
+sstcam_analysis = ["*.yaml"]
 
 [project]
 name = "sstcam-pixel-analysis"
-version = "0.2025.08.26"
+version = "0.2025.12.03"
 description = "Analyse SSTCAM lab data with SPE fitting and charge resolution plotting."
 dependencies = [
 "ctapipe >=0.28.0",

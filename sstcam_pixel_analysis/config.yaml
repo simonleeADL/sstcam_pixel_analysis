@@ -1,2 +1,3 @@
 hist_bins: 100
 good_peak_ratio: 1.08
+PDE: 0.46
