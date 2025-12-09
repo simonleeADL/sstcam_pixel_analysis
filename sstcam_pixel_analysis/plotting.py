@@ -1,3 +1,16 @@
+"""
+Plotting functions for SPE fitting and charge resolution.
+
+This module provides Plotly-based interative plots for use
+in HTML reports, including:
+
+- Fitted SPE parameter distributions
+- Visualisations of those paramters mapped to the camera geometry
+- Per-pixel SPE histograms and fitted PDF overlays
+- Charge-resolution curves
+- Charge resolution scaled to CTAO requirements
+"""
+
 from collections import defaultdict
 from pathlib import Path
 
@@ -8,23 +21,25 @@ from plotly.colors import sample_colorscale
 from plotly.subplots import make_subplots
 from tqdm import tqdm
 
-from ctapipe_io_sstcam import SSTCAMEventSource
-
-from .utilities import fmt, format_hz, get_pixel_info, requirement, get_source
-from .processing import calc_charge_res
+from sstcam_pixel_analysis.processing import calc_charge_res
+from sstcam_pixel_analysis.utilities import (
+    fmt,
+    format_hz,
+    get_pixel_info,
+    get_source,
+    requirement,
+)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-with open(f"{SCRIPT_DIR}/config.yaml", "r") as _f:
+with open(f"{SCRIPT_DIR}/config.yaml", "r", encoding="utf-8") as _f:
     _cfg = yaml.safe_load(_f)
 
 PDE = _cfg["PDE"]
 
 X_POISS = 10 ** np.arange(np.log10(0.3), np.log10(700), 0.1)
 Y_POISS = 1 / np.sqrt(X_POISS / PDE)
-
 X_REQ = X_POISS
-Y_REQ = requirement(X_REQ / PDE)
 
 
 def plot_charge_res(df):
@@ -44,28 +59,29 @@ def plot_charge_res(df):
     if n_nsbs == 1:
         cmap = sample_colorscale("Plasma", [0])
     else:
-        cmap = sample_colorscale("Plasma", [0.9*i / (n_nsbs - 1) for i in range(n_nsbs)])
-    
+        cmap = sample_colorscale(
+            "Plasma", [0.9 * i / (n_nsbs - 1) for i in range(n_nsbs)]
+        )
+
     for color, nsb_val in zip(cmap, unique_nsbs):
-        y_req = requirement(X_REQ / PDE,nsb=PDE*nsb_val/1e9)
+        y_req = requirement(X_REQ / PDE, nsb=PDE * nsb_val / 1e9, pde=PDE)
         fig.add_trace(
             go.Scatter(
                 x=X_REQ,
                 y=y_req,
                 mode="lines",
-                line=dict(color=color, dash="dash"),
+                line={"color": color, "dash": "dash"},
                 name=f"Requirement (NSB: {format_hz(nsb_val)})",
                 hoverinfo="name",
             )
         )
-
 
     fig.add_trace(
         go.Scatter(
             x=X_POISS,
             y=Y_POISS,
             mode="lines",
-            line=dict(color="grey", dash="dash"),
+            line={"color": "grey", "dash": "dash"},
             name="Poisson",
             hoverinfo="name",
         )
@@ -78,11 +94,11 @@ def plot_charge_res(df):
                 x=sub["expected_pe"],
                 y=sub["charge_res"],
                 mode="markers",
-                marker=dict(
-                    size=9,
-                    color=color,
-                ),
-                name=f"NSB: {format_hz(nsb_val)}",
+                marker={
+                    "size": 9,
+                    "color": color,
+                },
+                name=f"Charge res. (NSB: {format_hz(nsb_val)})",
                 hovertemplate=(
                     f"NSB: {format_hz(nsb_val)}<br>"
                     "expected p.e.: %{x}<br>"
@@ -95,52 +111,62 @@ def plot_charge_res(df):
         width=800,
         height=500,
         plot_bgcolor="white",
-        xaxis=dict(
-            type="log",
-            title="Average Expected p.e.",
-            showgrid=True,
-            zeroline=False,
-            linecolor="black",
-            mirror=True,
-        ),
-        yaxis=dict(
-            type="log",
-            title="Fractional charge resolution",
-            showgrid=True,
-            zeroline=False,
-            linecolor="black",
-            mirror=True,
-        ),
-        legend=dict(
-            x=1.02,
-            y=1,
-            xanchor="left",
-            yanchor="top",
-            bordercolor="black",
-        ),
-        margin=dict(l=60, r=20, t=20, b=60),
+        xaxis={
+            "type": "log",
+            "title": "Average Expected p.e.",
+            "showgrid": True,
+            "zeroline": False,
+            "linecolor": "black",
+            "mirror": True,
+            "range": [np.log10(0.3), np.log10(700)],
+        },
+        yaxis={
+            "type": "log",
+            "title": "Fractional charge resolution",
+            "showgrid": True,
+            "zeroline": False,
+            "linecolor": "black",
+            "mirror": True,
+        },
+        legend={
+            "x": 1.02,
+            "y": 1,
+            "xanchor": "left",
+            "yanchor": "top",
+            "bordercolor": "black",
+        },
+        margin={"l": 60, "r": 20, "t": 20, "b": 60},
     )
 
     return fig.to_html(full_html=False, include_plotlyjs="cdn")
 
+
 def plot_charge_res_relative(df_2d):
+    """Plot charge resolution divided by the CTAO requirement for each NSB level.
+
+    This shows how the camera's charge resolution compares to the
+    CTAO requirement curve, both for individual pixels (hidden by default)
+    and the whole camera, for each tested NSB level.
+
+    Args:
+        df_2d (pandas.DataFrame): Table of extracted and expected charges
+            containing columns: 'pixel_id', 'extracted_pe', 'expected_pe', 'nsb'.
+
+    Returns:
+        str: HTML snippet containing the Plotly figure.
     """
-    Plot relative charge resolution scaled to CTAO requirement vs expected charge.
-    For each NSB: 
-        - Solid markers for combined NSB data
-        - Transparent lines for each pixel
-    """
+
     def y_relative(x, y, nsb_val):
-        return y / requirement(x / PDE,nsb=PDE*nsb_val/1e9)
+        return y / requirement(x / PDE, nsb=PDE * nsb_val / 1e9, pde=PDE)
 
     fig = go.Figure()
 
     fig.add_trace(
         go.Scatter(
             x=X_REQ,
-            y=[1]*len(X_POISS),
+            y=[1] * len(X_POISS),
             mode="lines",
-            line=dict(color="black", dash="dash"),
+            line={"color": "black", "dash": "dash"},
             name="Requirement",
             hoverinfo="name",
         )
@@ -151,8 +177,10 @@ def plot_charge_res_relative(df_2d):
     if n_nsbs == 1:
         cmap = sample_colorscale("Plasma", [0])
     else:
-        cmap = sample_colorscale("Plasma", [0.9*i / (n_nsbs - 1) for i in range(n_nsbs)])
-    
+        cmap = sample_colorscale(
+            "Plasma", [0.9 * i / (n_nsbs - 1) for i in range(n_nsbs)]
+        )
+
     for color, nsb_val in zip(cmap, unique_nsbs):
 
         fig.add_trace(
@@ -160,35 +188,42 @@ def plot_charge_res_relative(df_2d):
                 x=X_POISS,
                 y=y_relative(X_POISS, Y_POISS, nsb_val),
                 mode="lines",
-                line=dict(color=color, dash="dash"),
+                line={"color": color, "dash": "dash"},
                 name=f"Poisson (NSB: {format_hz(nsb_val)})",
                 hoverinfo="name",
             )
         )
-    
+
     for color, nsb_val in zip(cmap, unique_nsbs):
 
         sub_nsb = df_2d[df_2d["nsb"] == nsb_val]
 
-        # --- Plot pixel lines ---
         legend_name = "Individual pixels"
 
         unique_pix = sorted(sub_nsb["pixel_id"].unique())
         for pix_id in unique_pix:
             sub_pix = sub_nsb[sub_nsb["pixel_id"] == pix_id]
             xax = sorted(sub_pix["expected_pe"].unique())
-            yax = [calc_charge_res(sub_pix[sub_pix['expected_pe'] == pe]["extracted_pe"], pe) 
-                   for pe in xax]
-            
-            show_legend = bool((pix_id == unique_pix[0]) and (nsb_val == unique_nsbs[0]))
+            yax = [
+                calc_charge_res(
+                    sub_pix[sub_pix["expected_pe"] == pe]["extracted_pe"], pe
+                )
+                for pe in xax
+            ]
 
-            rgba_color = color.replace("rgb(", "rgba(").replace(")", f",{np.sqrt(1/len(unique_pix))})")
+            show_legend = bool(
+                (pix_id == unique_pix[0]) and (nsb_val == unique_nsbs[0])
+            )
+
+            rgba_color = color.replace("rgb(", "rgba(").replace(
+                ")", f",{np.sqrt(1/len(unique_pix))})"
+            )
             fig.add_trace(
                 go.Scatter(
                     x=xax,
                     y=y_relative(np.array(xax), np.array(yax), nsb_val),
                     mode="lines",
-                    line=dict(color=rgba_color),
+                    line={"color": rgba_color},
                     legendgroup="pixels",
                     showlegend=show_legend,
                     name=legend_name if pix_id == unique_pix[0] else None,
@@ -201,24 +236,22 @@ def plot_charge_res_relative(df_2d):
                 )
             )
 
-
-        # --- Plot NSB summary markers ---
-        x_summary = sorted(sub_nsb["expected_pe"].unique())
-        y_summary = []
-        for pe in x_summary:
+        x_total = sorted(sub_nsb["expected_pe"].unique())
+        y_total = []
+        for pe in x_total:
             sub_pe = sub_nsb[sub_nsb["expected_pe"] == pe]
-            y_summary.append(calc_charge_res(sub_pe["extracted_pe"], pe))
+            y_total.append(calc_charge_res(sub_pe["extracted_pe"], pe))
 
         fig.add_trace(
             go.Scatter(
-                x=x_summary,
-                y=y_relative(np.array(x_summary), np.array(y_summary), nsb_val),
+                x=x_total,
+                y=y_relative(np.array(x_total), np.array(y_total), nsb_val),
                 mode="markers",
-                marker=dict(
-                    size=9,
-                    color=color,
-                ),
-                name=f"NSB: {format_hz(nsb_val)}",
+                marker={
+                    "size": 9,
+                    "color": color,
+                },
+                name=f"Charge res. (NSB: {format_hz(nsb_val)})",
                 hovertemplate=(
                     f"NSB: {format_hz(nsb_val)}<br>"
                     "expected p.e.: %{x}<br>"
@@ -232,33 +265,35 @@ def plot_charge_res_relative(df_2d):
         height=500,
         plot_bgcolor="white",
         showlegend=True,
-        xaxis=dict(
-            type="log",
-            title="Average Expected p.e.",
-            showgrid=True,
-            zeroline=False,
-            linecolor="black",
-            mirror=True,
-        ),
-        yaxis=dict(
-            title="Fractional charge resolution / Requirement",
-            showgrid=True,
-            zeroline=False,
-            linecolor="black",
-            mirror=True,
-            range=[0, 1.5],
-        ),
-        legend=dict(
-            x=1.02,
-            y=1,
-            xanchor="left",
-            yanchor="top",
-            bordercolor="black",
-        ),
-        margin=dict(l=60, r=20, t=20, b=60),
+        xaxis={
+            "type": "log",
+            "title": "Average Expected p.e.",
+            "showgrid": True,
+            "zeroline": False,
+            "linecolor": "black",
+            "mirror": True,
+            "range": [np.log10(0.3), np.log10(700)],
+        },
+        yaxis={
+            "title": "Fractional charge resolution / Requirement",
+            "showgrid": True,
+            "zeroline": False,
+            "linecolor": "black",
+            "mirror": True,
+            "range": [0, 1.5],
+        },
+        legend={
+            "x": 1.02,
+            "y": 1,
+            "xanchor": "left",
+            "yanchor": "top",
+            "bordercolor": "black",
+        },
+        margin={"l": 60, "r": 20, "t": 20, "b": 60},
     )
 
     return fig.to_html(full_html=False, include_plotlyjs=False)
+
 
 def plot_dispersion(df_2d):
     """
@@ -281,8 +316,8 @@ def plot_dispersion(df_2d):
         mask = (x > 0) & (y > 0) & np.isfinite(x) & np.isfinite(y)
         x, y = x[mask], y[mask]
 
-        xbins = np.logspace(np.log10(x.min()), np.log10(x.max() * 1.2), 80)
-        ybins = np.logspace(-4, 2.05, 120)
+        xbins = np.logspace(np.log10(x.min()), np.log10(x.max() * 1.2), 120)
+        ybins = np.logspace(-4, 2.05, 500)
 
         hist, xedges, yedges = np.histogram2d(x, y, bins=[xbins, ybins])
         z = np.log10(hist.T + 1)
@@ -292,14 +327,14 @@ def plot_dispersion(df_2d):
             x=xedges[:-1],
             y=yedges[:-1],
             colorscale="Viridis",
-            colorbar=dict(title="log10(Counts)"),
+            colorbar={"title": "log10(Counts)"},
         )
 
         ref_line = go.Scatter(
             x=[x.min(), x.max()],
             y=[1, 1],
             mode="lines",
-            line=dict(color="white", dash="dot"),
+            line={"color": "white", "dash": "dot"},
             name="Extracted = Expected",
         )
 
@@ -307,7 +342,7 @@ def plot_dispersion(df_2d):
             x=xbins,
             y=1 / xbins,
             mode="lines",
-            line=dict(color="grey", dash="dot"),
+            line={"color": "grey", "dash": "dot"},
             name="Extracted = 1",
         )
 
@@ -329,7 +364,7 @@ def plot_dispersion(df_2d):
             x=mean_x,
             y=mean_y,
             mode="lines",
-            line=dict(color="red", width=2),
+            line={"color": "red", "width": 2},
             name="Mean",
         )
 
@@ -340,16 +375,16 @@ def plot_dispersion(df_2d):
             height=600,
             title=f"NSB: {format_hz(nsb)}",
             plot_bgcolor="white",
-            xaxis=dict(title="Expected PE", type="log"),
-            yaxis=dict(title="Extracted PE / Expected PE", type="log"),
-            margin=dict(l=60, r=20, t=40, b=60),
-            legend=dict(
-                x=0.99,
-                y=0.99,
-                xanchor="right",
-                yanchor="top",
-                bgcolor="rgba(255,255,255,0.7)",
-            ),
+            xaxis={"title": "Expected PE", "type": "log"},
+            yaxis={"title": "Extracted PE / Expected PE", "type": "log"},
+            margin={"l": 60, "r": 20, "t": 40, "b": 60},
+            legend={
+                "x": 0.99,
+                "y": 0.99,
+                "xanchor": "right",
+                "yanchor": "top",
+                "bgcolor": "rgba(255,255,255,0.7)",
+            },
         )
 
         fig.update_traces(hoverinfo="skip")  # disables hover globally
@@ -492,8 +527,8 @@ def plot_value_lists_plotly(value_lists, illum_no, include_pix):
         fig.add_trace(
             go.Histogram(
                 x=data,
-                xbins=dict(start=mn, end=mx, size=sz),
-                marker=dict(color="dodgerblue"),
+                xbins={"start": mn, "end": mx, "size": sz},
+                marker={"color": "dodgerblue"},
             ),
             row=row,
             col=col,
@@ -520,7 +555,7 @@ def plot_value_lists_plotly(value_lists, illum_no, include_pix):
         height=1000,
         width=700,
         showlegend=False,
-        margin=dict(t=50, b=40, l=40, r=20),
+        margin={"t": 50, "b": 40, "l": 40, "r": 20},
     )
 
     return fig.to_html(full_html=False, include_plotlyjs="cdn")
@@ -575,48 +610,52 @@ def plot_all_fits_plotly(pixel_nos, fitter, illum_no, include_pix):
 
             slot, asic, asic_ch = get_pixel_info(pixel_no)
 
+            label = (f"Pixel ID: {pixel_no}<br>Slot: {slot}<br>"
+                     f"ASIC: {asic}<br>ASIC Ch: {asic_ch}<extra></extra>")
+
             fig.add_trace(
                 go.Scatter(
                     x=fit_x,
                     y=fit_y,
                     mode="lines",
-                    hovertemplate=f"Pixel ID: {pixel_no}<br>Slot: {slot}<br>ASIC: {asic}<br>ASIC Ch: {asic_ch}<extra></extra>",
-                    line=dict(width=2),
+                    hovertemplate=label,
+                    line={"width": 2},
                 ),
                 row=row,
                 col=col,
             )
 
-    fig.update_yaxes(autorangeoptions=dict(include=0, clipmin=0))
+    fig.update_yaxes(autorangeoptions={"include": 0, "clipmin": 0})
 
     fig.update_layout(
         showlegend=False,
         width=800,
         height=250 * num_rows,
-        margin=dict(l=30, r=30, t=30, b=30),
+        margin={"l": 30, "r": 30, "t": 30, "b": 30},
     )
 
     return fig.to_html(full_html=False, include_plotlyjs=False)
 
 
 def plot_fit_plotly(c, fit, param_text, ipix, pixel_no, illum_no, hist_bins):
-    """
-    Generates a plot of the SPe histogram and
-    SPE fit for a given pixels, as well as
-    the text listing each of the extracted parameters.
+    """Plot a pixel's SPE histogram with its fitted PDF.
+
+    Generates a histogram of extracted charges, overlays the fitted SPE model,
+    and returns both the HTML plot and the formatted parameter text.
 
     Args:
-        c (array): List of extracted charges
-        Class containing fitter and related information
-        param_text (str): Text of fit parameters
-        ipix (int): Pixel index (of fitted pixels)
-        pixel_no (int): Pixel ID/index (in camera)
-        illum_no (int): Illumination/file number
+        c (array): Extracted ADC count values for this pixel.
+        fit (FitResults): Object containing fitter, hist range, and parameter lists.
+        param_text (str): Text describing fitted parameters.
+        ipix (int): Index of the pixel within the fitted-pixels array.
+        pixel_no (int): Physical pixel ID.
+        illum_no (int): Illumination/file index.
+        hist_bins (int): Number of histogram bins.
 
     Returns:
-        pixel_plot: Plotly HTML figure
-        pixel_text: Extracted parameter text
-
+        tuple:
+            pixel_plot (str): HTML of the Plotly plot.
+            pixel_text (str): Parameter text formatted for HTML.
     """
 
     slot, asic, asic_ch = get_pixel_info(pixel_no)
@@ -648,20 +687,20 @@ def plot_fit_plotly(c, fit, param_text, ipix, pixel_no, illum_no, hist_bins):
             y=fit_y,
             mode="lines",
             name="Fit",
-            line=dict(color="maroon"),
+            line={"color": "maroon"},
         )
     )
 
-    fig.update_yaxes(autorangeoptions=dict(include=0, clipmin=0))
+    fig.update_yaxes(autorangeoptions={"include": 0, "clipmin": 0})
 
     fig.update_layout(
         width=600,
         height=350,
         title=f"Pixel ID: {pixel_no}, Slot: {slot}, ASIC: {asic}, ASIC Ch: {asic_ch}",
-        margin=dict(t=50, b=10),
+        margin={"t": 50, "b": 10},
         xaxis_title="Integrated charge (mV)",
         yaxis_title="Counts (normalised)",
-        legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99),
+        legend={"yanchor": "top", "y": 0.99, "xanchor": "right", "x": 0.99},
     )
 
     pixel_plot = fig.to_html(full_html=False, include_plotlyjs=False)
@@ -707,15 +746,23 @@ def get_pixel_hovertext(geom, image):
 
 
 def plot_good_pixels(input_file, live_pixels, good_fit_mask, tel_id):
-    """
-    Generates a plot of where pixels with good fits are in the camera.
+    """Generate a camera map highlighting pixels with good SPE fits.
+
+    Produces an image showing:
+      - dead pixels,
+      - live pixels with bad fits,
+      - live pixels with good fits.
+
+    Includes hover text with pixel metadata.
 
     Args:
-        input_file (str): Input filename
-        fit (object): Class containing fitter and related information
+        input_file (str): Path to the data file (used to load geometry).
+        live_pixels (array): Indices of camera pixels considered live.
+        good_fit_mask (array[bool]): Mask marking good-fit pixels.
+        tel_id (int): Telescope ID.
 
     Returns:
-        fig: Plotly HTML figure
+        str: HTML snippet of the Plotly image.
     """
 
     source, _ = get_source(input_file, 1)
@@ -745,7 +792,7 @@ def plot_good_pixels(input_file, live_pixels, good_fit_mask, tel_id):
 
     fig = go.Figure(go.Image(z=rgb_image, hovertext=hovertext_2d, hoverinfo="text"))
     fig.update_layout(
-        margin=dict(l=0, r=0, t=0, b=0),
+        margin={"l": 0, "r": 0, "t": 0, "b": 0},
         width=800,
     )
     fig.update_xaxes(showticklabels=False)
@@ -764,22 +811,27 @@ def plot_param_maps(
     include_pix,
     illum_no,
 ):
-    """
-    Generate plots of extracted parameters for pixels on the camera
-    with a drop-down menu.
+    """Generate camera-map visualisations of SPE parameters with a dropdown selector.
+
+    A camera image is drawn showing live, dead, and excluded pixels. A
+    dropdown menu allows selecting any of the extracted SPE parameters, their
+    peak-valley ratios, or waveform peak indices.
+    Hovertext provides per-pixel metadata.
 
     Args:
-        input_file (str): Input filename
-        value_lists (dict): SPE fit parameter lists
-        peak_valley (numpy array): Peak/valley ratios of SPE fits
-        tel_id (int): Telescope ID
-        live_pixels (bool array): Mask of pixels that aren't dead
-        include_pix (bool array): Mask of included pixels for this plot
-        illum_no (int): Illumination/file number
+        input_file (str): Filename used to load camera geometry.
+        value_lists (dict): Mapping of parameter name to array of per-pixel values.
+        peak_valley (array): Peak-to-valley ratios of fitted SPE PDF.
+        peak_indexes (array): Waveform peak index positions for each pixel.
+        tel_id (int): Telescope ID.
+        live_pixels (array): Pixel IDs that are live.
+        include_pix (array[bool]): Mask marking included pixels for this plot.
+        illum_no (int): Illumination/file index.
 
     Returns:
-        fig: Plotly HTML figure
+        str: HTML snippet containing the Plotly figure.
     """
+
     source, _ = get_source(input_file, 1)
     geom = source.subarray.tel[tel_id].camera.geometry
     live_pixels = np.array(live_pixels)
@@ -865,7 +917,7 @@ def plot_param_maps(
             go.Heatmap(
                 z=image_square,
                 colorscale="Viridis",
-                colorbar=dict(title=key),
+                colorbar={"title": key},
                 hoverinfo="text",
                 hovertext=hovertext_2d,
                 visible=(i == 0),
@@ -895,7 +947,7 @@ def plot_param_maps(
                 "bgcolor": "white",
             }
         ],
-        margin=dict(l=0, r=0, t=0, b=0),
+        margin={"l": 0, "r": 0, "t": 0, "b": 0},
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         width=800,

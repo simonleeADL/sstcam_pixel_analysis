@@ -1,3 +1,7 @@
+"""
+Bulk processing functions for SPE fitting and charge-resolution analysis.
+"""
+
 import json
 import os
 import threading
@@ -10,10 +14,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import yaml
+from jinja2 import Template
 from joblib import Parallel, delayed
+from spefit.fitter import CameraFitter
+from spefit.pdf import PDFSimultaneous
 from tqdm import tqdm
 
-from .plotting import (
+from sstcam_pixel_analysis.plotting import (
     get_param_text,
     plot_all_fits_plotly,
     plot_charge_res,
@@ -24,33 +31,33 @@ from .plotting import (
     plot_param_maps,
     plot_value_lists_plotly,
 )
-from .processing import (
+from sstcam_pixel_analysis.processing import (
     FileData,
     get_bad_fit_mask,
     get_dataset,
+    get_pe_charge_res,
     get_peak_valley_ratios,
     initialise_data,
-    get_pe_charge_res,
     process_data_charge_res,
 )
-from .utilities import (
+from sstcam_pixel_analysis.utilities import (
     get_file_info,
+    get_lookup_charge_res,
     get_processing_text,
     get_run_text_chres,
     get_value_lists,
-    load_calibration,
+    load_transfer_function,
     output_filenames,
     spin,
-    write_pixel_spe_table,
-    get_lookup_charge_res,
     too_bright,
+    write_pixel_spe_table,
 )
 
 # Reading in configs from config.yaml
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-with open(f"{SCRIPT_DIR}/config.yaml", "r") as _f:
+with open(f"{SCRIPT_DIR}/config.yaml", "r", encoding="utf-8") as _f:
     _cfg = yaml.safe_load(_f)
 
 HIST_BINS = _cfg["hist_bins"]
@@ -58,28 +65,32 @@ GOOD_PEAK_RATIO = _cfg["good_peak_ratio"]
 PDE = _cfg["PDE"]
 
 
-def initialise_datasets(args, linear=False):
-    """
-    Initialise the datasets of the runs.
+def initialise_datasets(args):
+    """Initialises FileData objects for each lab run.
+
+    If there are not pre-existing checkpoints for each file,
+    read in the files to get relevant metadata to go in to the
+    FileData objects. If all checkpoints exist, just grab the
+    easy-to-acquire file info and pass back a mostly empty FileData
+    object, knowing it'll be filled in properly later.
 
     Args:
-        args (args): Command-line arguments
-        linear (bool, optional): Process files non-parallel. Defaults to False.
+        args: Parsed command-line arguments.
 
     Returns:
-        list: List of FileData objects
+        list[FileData]: List of dataset objects containing run metadata
     """
+
     if hasattr(args, "input_file"):
         input_files = args.input_file
     else:
-        base_dir = args.input_dir
-        input_files = glob(f"{base_dir}*r1.tio")
+        input_files = glob(f"{args.input_dir}*r1.tio")
         input_files.sort()
-    
+
     if hasattr(args, "input_dir"):
         lk = get_lookup_charge_res(args)
         for f in input_files.copy():
-            if too_bright(lk,f):
+            if too_bright(lk, f):
                 input_files.remove(f)
 
     need_to_initialise = False
@@ -91,104 +102,105 @@ def initialise_datasets(args, linear=False):
         if not os.path.isfile(all_extracted_adc_file):
             need_to_initialise = True
 
-    num_files = len(input_files)
-
     if need_to_initialise:
-        if linear:
+        if args.linear:
             datasets = []
             for f in tqdm(input_files):
                 d = initialise_data(f, args)
                 datasets.append(d)
             return datasets
-        else:
-            done = False
-            start_time = time.time()
-            t = threading.Thread(
-                target=spin, args=(lambda: done, start_time, num_files)
-            )
-            t.start()
+        done = False
+        start_time = time.time()
+        t = threading.Thread(
+            target=spin, args=(lambda: done, start_time, len(input_files))
+        )
+        t.start()
 
-            try:
-                parallel = Parallel(n_jobs=-1, backend="loky")
-                tasks = (delayed(initialise_data)(f, args) for f in input_files)
-                return list(parallel(tasks))
-            finally:
-                done = True
-                t.join()
+        try:
+            parallel = Parallel(n_jobs=-1, backend="loky")
+            tasks = (delayed(initialise_data)(f, args) for f in input_files)
+            return list(parallel(tasks))
+        finally:
+            done = True
+            t.join()
     else:
         datasets = []
         for f in input_files:
             tel_id, run_text, n_events = get_file_info(f)
             dataset = FileData(
-                f, tel_id, n_events, run_text, None, None, None, None, None, None
+                f, tel_id, n_events, run_text, None, None, None, None, None
             )
             datasets.append(dataset)
         return datasets
 
 
-def get_datasets_spe(datasets, args, lambda_guesses, linear=False):
-    """
-    Read in datasets for SPE fitting in parallel,
-    whether from checkpoints or processing from scratch.
-    It also shows a spinning animation because
-    a progress bar is infeasible.
+def get_datasets_spe(datasets, args, lambda_guesses):
+    """Load or reprocess datasets for SPE fitting.
+
+    For each dataset, this reads or creates extracted ADC counts.
 
     Args:
-        args: Command-line arguments for SPE fitting
+        datasets (list[FileData]): Previously initialised datasets.
+        args: Parsed command-line arguments for SPE fitting.
+        lambda_guesses (array or None): Initial lambda guesses for SPE fitting.
 
     Returns:
-        list: A list of datasets in FileData class (defined in plotting.py)
+        list[FileData]: Updated datasets containing extracted ADC counts and fit inputs.
     """
-    num_files = len(args.input_file)
 
-    linear=True
+    num_files = len(args.input_file)
 
     if lambda_guesses is not None:
         for dataset in datasets:
             dataset.peak_indexes = datasets[np.argmax(lambda_guesses)].peak_indexes
 
-    if linear:
+    if args.linear:
         new_datasets = []
         for i, dataset in tqdm(enumerate(datasets), total=len(datasets)):
             d = get_dataset(dataset, args, illum_no=i, lambda_guesses=lambda_guesses)
             new_datasets.append(d)
         return new_datasets
-    else:
-        done = False
-        start_time = time.time()
-        t = threading.Thread(target=spin, args=(lambda: done, start_time, num_files))
-        t.start()
+    done = False
+    start_time = time.time()
+    t = threading.Thread(target=spin, args=(lambda: done, start_time, num_files))
+    t.start()
 
-        try:
-            parallel = Parallel(n_jobs=-1, backend="loky")
-            tasks = (
-                delayed(get_dataset)(
-                    dataset, args, illum_no=i, lambda_guesses=lambda_guesses
-                )
-                for i, dataset in enumerate(datasets)
+    try:
+        parallel = Parallel(n_jobs=-1, backend="loky")
+        tasks = (
+            delayed(get_dataset)(
+                dataset, args, illum_no=i, lambda_guesses=lambda_guesses
             )
-            return list(parallel(tasks))
-        finally:
-            done = True
-            t.join()
+            for i, dataset in enumerate(datasets)
+        )
+        return list(parallel(tasks))
+    finally:
+        done = True
+        t.join()
 
 
 def do_fitting_spe(args, datasets):
-    """
-    Perform the SPE fit.
+    """Perform the pixel-wise simultaneous SPE fit.
+
+    Constructs a combined PDF model (single or simultaneous), configures a
+    `CameraFitter`, runs pixel fits (multiprocessed unless `--linear`), and
+    evaluates goodness-of-fit criteria.
+    Returns a `FitResults` object bundling the fitter object and
+    all extracted parameter lists.
 
     Args:
-        args: Command-line arguments for SPE fitting
-        datasets: A list of datasets in FileData class (defined in plotting.py)
+        args: Parsed command-line arguments for SPE fitting.
+        datasets (list[FileData]): Datasets containing extracted ADC traces.
 
     Returns:
-        FitResults: The results of the fit in FitResults class (defined here)
+        FitResults: Object containing the fitter, parameter lists, peak/valley
+        ratios, good-fit masks, and histogram range.
     """
-    from spefit.fitter import CameraFitter
-    from spefit.pdf import PDFSimultaneous
 
     @dataclass
     class FitResults:
+        """_summary_"""
+
         fitter: CameraFitter
         value_lists: list
         peak_valley: np.ndarray
@@ -212,7 +224,11 @@ def do_fitting_spe(args, datasets):
     )
 
     all_extracted_adc_datasets = [f.extracted_adc for f in datasets]
-    fitter.multiprocess(all_extracted_adc_datasets, n_processes=3)
+    if args.linear:
+        n_processes = 1
+    else:
+        n_processes = 3
+    fitter.multiprocess(all_extracted_adc_datasets, n_processes=n_processes)
 
     n_files = len(datasets)
     value_lists = get_value_lists(fitter, n_files)
@@ -236,16 +252,15 @@ def write_reports_spe(args, datasets, fit):
     BAD: Pixels without a "good" SPE fit
 
     The goodness of the fit is defined by whether the
-    average height between the 1st and 2nd p.e. peaks is
-    at least 8 percent higher than the trough inbetween.
+    average height between the two highest p.e. peaks is
+    at least 4 percent higher than the trough inbetween.
     This is configurable in config.yaml.
 
     Args:
-        args: Command-line arguments for SPE fitting
-        datasets: A list of datasets in FileData class (defined in plotting.py)
-        fit: The results of the fit in FitResults class (defined in do_fitting_spe)
+        args: Parsed command-line arguments for SPE fitting.
+        datasets (list[FileData]): Processed datasets including extracted ADC counts.
+        fit (FitResults): Fit results returned by `do_fitting_spe`.
     """
-    from jinja2 import Template
 
     for dataset, good_fit_mask in zip(datasets, fit.good_fit_masks):
         dataset.run_text += (
@@ -272,39 +287,46 @@ def write_reports_spe(args, datasets, fit):
     ):
         _, report_fl, _ = output_filenames(f, args.output_dir)
 
-        report_filename = report_fl
+        report_filename = str(report_fl)
+
         if suffix == "ALL":
-            include_pix = np.array([True] * len(live_pixels))
+            included_pixels_mask = np.array([True] * len(live_pixels))
         else:
-            report_filename = report_fl.replace(".html", f"_{suffix}.html")
+            report_filename = report_filename.replace(".html", f"_{suffix}.html")
             if suffix == "GOOD":
-                include_pix = fit.good_fit_masks[illum_no]
-            if suffix == "BAD":
-                include_pix = ~fit.good_fit_masks[illum_no]
+                included_pixels_mask = fit.good_fit_masks[illum_no]
+            elif suffix == "BAD":
+                included_pixels_mask = ~fit.good_fit_masks[illum_no]
+            else:
+                return
 
         if os.path.exists(report_filename):
             os.remove(report_filename)
-        if not include_pix.any():
+        if not included_pixels_mask.any():
             continue
 
-        selected_ipix = np.where(include_pix)[0]
+        selected_pixel_indexes = np.where(included_pixels_mask)[0]
 
-        pixels = []
+        per_pixel_fits = []
 
-        for ipix in tqdm(selected_ipix, desc="Plotting fits", leave=False):
-            pix_no = live_pixels[ipix]
+        for pixel_index in tqdm(
+            selected_pixel_indexes, desc="Plotting fits", leave=False
+        ):
+            pix_no = live_pixels[pixel_index]
 
-            param_text = get_param_text(ipix, illum_no, include_pix, fit)
-
-            c = datasets[illum_no].extracted_adc.T[ipix]
-            pixel_plot, pixel_text = plot_fit_plotly(
-                c, fit, param_text, ipix, pix_no, illum_no, HIST_BINS
+            param_text = get_param_text(
+                pixel_index, illum_no, included_pixels_mask, fit
             )
-            pixels.append([pixel_plot, pixel_text])
+
+            c = datasets[illum_no].extracted_adc.T[pixel_index]
+            pixel_plot, pixel_text = plot_fit_plotly(
+                c, fit, param_text, pixel_index, pix_no, illum_no, HIST_BINS
+            )
+            per_pixel_fits.append([pixel_plot, pixel_text])
 
         jinja_data = {}
         jinja_data["param_dist"] = plot_value_lists_plotly(
-            fit.value_lists, illum_no, include_pix
+            fit.value_lists, illum_no, included_pixels_mask
         )
         jinja_data["good_pixels"] = plot_good_pixels(
             args.input_file[0],
@@ -320,45 +342,55 @@ def write_reports_spe(args, datasets, fit):
             datasets[illum_no].peak_indexes,
             tel_id,
             datasets[illum_no].live_pixels,
-            include_pix,
+            included_pixels_mask,
             illum_no,
         )
         jinja_data["fits_overview"] = plot_all_fits_plotly(
-            datasets[illum_no].live_pixels, fit.fitter, illum_no, include_pix
+            datasets[illum_no].live_pixels, fit.fitter, illum_no, included_pixels_mask
         )
 
         jinja_data["pixels_type"] = suffix
         jinja_data["processing_text"] = processing_text
         jinja_data["run_text"] = datasets[illum_no].run_text
-        jinja_data["pixels"] = pixels
+        jinja_data["pixels"] = per_pixel_fits
 
         report_template = f"{SCRIPT_DIR}/../templates/spe_report_template.html"
         os.makedirs(os.path.dirname(report_filename), exist_ok=True)
 
         with open(report_filename, "w", encoding="utf-8") as f:
-            with open(report_template) as template_file:
+            with open(report_template, encoding="utf-8") as template_file:
                 spe_report_template = Template(template_file.read())
                 f.write(spe_report_template.render(jinja_data))
 
+
 def get_charge_res_output(datasets, args):
-    """
-    Extract the images of events from dynamic range runs
-    and calculate charge resolution.
+    """Compute charge resolution across a set of dynamic-range runs.
+
+    This performs per-run processing, removes overly bright runs, builds transfer
+    functions for ADC to p.e. conversion, extracts per-pixel charge distributions,
+    and assembles both:
+      - a 1D dataframe of charge-resolution points, and
+      - a 2D dataframe containing every individual expected_pe and extracted_pe (and nsb).
 
     Args:
-        args: Command-line arguments for charge resolution
+        datasets (list[FileData]): Input datasets from dynamic range lab runs.
+        args: Parsed command-line arguments for charge-resolution analysis.
 
     Returns:
-        df (pandas df): Pandas dataframe of extracted charge resolutions
-        df_2d (pandas df): Pandas dataframe of all extracted ADC values
-        run_text (str): Text description of this run
+        tuple:
+            df (pandas.DataFrame): Per-run charge-resolution summary.
+            df_2d (pandas.DataFrame): All extracted and expected p.e.
+            run_text (str): Text description of this run.
     """
 
     run_text = get_run_text_chres(datasets[0].filepath)
     lk = get_lookup_charge_res(args)
 
-    ref_spe = pd.read_csv(args.ref_spe)
-    pe_map = ref_spe.set_index("pixel_no")[["pe", "good_fit"]]
+    if args.ref_spe:
+        ref_spe = pd.read_csv(args.ref_spe)
+        pe_map = ref_spe.set_index("pixel_no")[["pe", "good_fit"]]
+    else:
+        pe_map = None
 
     charge_res_results = []
     all_extracted = []
@@ -378,7 +410,7 @@ def get_charge_res_output(datasets, args):
                 nsb_zero.append(True)
             else:
                 nsb_zero.append(False)
-    
+
     nsb_zero = np.array(nsb_zero)
 
     parallel_results = Parallel(n_jobs=-1, backend="loky")(
@@ -395,7 +427,13 @@ def get_charge_res_output(datasets, args):
     all_mean_extracted_adc = all_mean_extracted_adc[nsb_zero].T
     expected_pe_list = np.array(expected_pe_list)
 
-    tf_filepath = args.output_dir + f"/transfer_functions.json"
+    _, _, output_dir = output_filenames(
+        args.input_dir, args.output_dir, report="charge_res"
+    )
+
+    tf_filepath = output_dir / "transfer_functions.json"
+
+    os.makedirs(os.path.dirname(tf_filepath), exist_ok=True)
 
     if not os.path.exists(tf_filepath) or args.overwrite:
         cal_data = {}
@@ -412,10 +450,10 @@ def get_charge_res_output(datasets, args):
                 "adc_per_pe": smooth.tolist(),
             }
 
-        with open(tf_filepath, "w") as f:
+        with open(tf_filepath, "w", encoding="utf-8") as f:
             json.dump(cal_data, f)
 
-    transfer_function = load_calibration(tf_filepath)
+    transfer_function = load_transfer_function(tf_filepath)
 
     parallel = Parallel(n_jobs=-1, backend="loky")
     output = parallel(
@@ -431,7 +469,7 @@ def get_charge_res_output(datasets, args):
         charge_res_results.append(out["result"])
         all_extracted.extend(out["extracted"])
         all_expected.extend(out["expected"])
-        all_pixel_ids.extend(out['pixel_ids'])
+        all_pixel_ids.extend(out["pixel_ids"])
         all_nsb.extend(out["nsb"])
 
     df = pd.DataFrame.from_records(
@@ -440,28 +478,32 @@ def get_charge_res_output(datasets, args):
 
     df_2d = pd.DataFrame(
         np.column_stack((all_pixel_ids, all_extracted, all_expected, all_nsb)),
-        columns=["pixel_id","extracted_pe", "expected_pe", "nsb"],
+        columns=["pixel_id", "extracted_pe", "expected_pe", "nsb"],
     )
 
     return df, df_2d, run_text
 
 
 def write_report_charge_res(args, df, df_2d, run_text):
-    """
-    Write an HTML report of the extracted charge resolution,
-    which is split by induced NSB.
-    Also includes a 2D histogram of expected vs relative extracted p.e.
+    """Generate the HTML report for charge-resolution.
+
+    Makes an interactive report containing:
+      - Charge-resolution curves
+      - Charge resolution scaled by CTAO requirement
+      - Per-NSB dispersion plots
 
     Args:
-        args: Command-line arguments for charge resolution
-        df (pandas df): Pandas dataframe of extracted charge resolutions
-        df_2d (pandas df): Pandas dataframe of all extracted charges
-        run_text (str): Text description of this run
+        args: Parsed command-line arguments for charge-resolution analysis.
+        df (pandas.DataFrame): Per-run charge-resolution summary.
+        df_2d (pandas.DataFrame): All extracted and expected p.e.
+        run_text (str): Text description of the dataset and run metadata.
     """
-    from jinja2 import Template
 
     pixels_type = "GOOD" if args.remove_bad_pixels else "ALL"
-    report_filename = args.output_dir + f"/CHARGE_RES_{pixels_type}.html"
+    _, _, output_dir = output_filenames(
+        args.input_dir, args.output_dir, report="charge_res"
+    )
+    report_filename = output_dir / f"CHARGE_RES_{pixels_type}.html"
 
     jinja_data = {}
 
@@ -477,6 +519,6 @@ def write_report_charge_res(args, df, df_2d, run_text):
     os.makedirs(os.path.dirname(report_filename), exist_ok=True)
 
     with open(report_filename, "w", encoding="utf-8") as f:
-        with open(report_template) as template_file:
+        with open(report_template, encoding="utf-8") as template_file:
             spe_report_template = Template(template_file.read())
             f.write(spe_report_template.render(jinja_data))

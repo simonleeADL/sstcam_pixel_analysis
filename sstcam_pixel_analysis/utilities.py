@@ -1,3 +1,9 @@
+"""
+Utility functions shared across sstcam-pixel-analysis.
+
+This module provides a variety of functions used by other modules.
+"""
+
 import argparse
 import csv
 import itertools
@@ -10,31 +16,22 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import yaml
-from ctapipe.io import EventSource
 from astropy.io import fits
+from ctapipe.io import EventSource
+from ctapipe_io_sstcam import SSTCAMEventSource
 from scipy.interpolate import interp1d
 from sstcam_configuration.mapping.pixel import MappingPixel
 
-from ctapipe_io_sstcam import SSTCAMEventSource
-
 PIX_MAP = MappingPixel.from_version("v0.0.1-sst")
-
-SCRIPT_DIR = Path(__file__).resolve().parent
-
-with open(f"{SCRIPT_DIR}/config.yaml", "r") as _f:
-    _cfg = yaml.safe_load(_f)
-
-PDE = _cfg["PDE"]
 
 
 def spin(stop, start_time, n_files):
     """
-    Animate a spinning
+    Animate a spinner in command line
 
     Args:
         stop (bool): Bool for when to stop the animation.
-        start_time (time): Timestamp when processing started
+        start_time (float): Timestamp when processing started
         n_files (int): Number of files being processed
     """
     for c in itertools.cycle("|/-\\"):
@@ -77,14 +74,37 @@ def format_hz(hz):
 
     return f"{round(hz)} Hz"
 
-def too_bright(lk,f):
+
+def too_bright(lk, f):
+    """Check whether a file is too bright (i.e. mostly saturates)
+    for charge-resolution calculation.
+
+    Args:
+        lk (pandas.DataFrame): Lookup table of run parameters.
+        f (Path or str): File path key.
+
+    Returns:
+        bool: True if n_ph > 1200
+    """
+
     filepath = Path(f)
     n_ph = lk["n_ph"][filepath]
     if n_ph > 1200:
         return True
     return False
 
+
 def baseline_subtract(event, tel_id=1):
+    """Apply a basic per-pixel baseline correction to event waveforms.
+
+    Args:
+        event: ctapipe event object.
+        tel_id (int, optional): Telescope ID. Defaults to 1.
+
+    Returns:
+        event: Event with baseline-subtracted waveforms.
+    """
+
     w = event.r1.tel[tel_id].waveform[0]
     idx = np.r_[0:20, w.shape[1] - 40 : w.shape[1]]
     baseline = w[:, idx].mean(axis=1)
@@ -92,8 +112,17 @@ def baseline_subtract(event, tel_id=1):
     return event
 
 
-def load_calibration(filename):
-    with open(filename) as f:
+def load_transfer_function(filename):
+    """Load and construct interpolation-based ADC to p.e. transfer functions.
+
+    Args:
+        filename (str): Path to transfer function JSON file.
+
+    Returns:
+        dict: Nested dict mapping window width, pixel ID, transfer function.
+    """
+
+    with open(filename, encoding="utf-8") as f:
         data = json.load(f)
     transfer_function = {}
     for w, pix_dict in data.items():
@@ -111,14 +140,38 @@ def load_calibration(filename):
             transfer_function[w][int(pix_id)] = f_interp
     return transfer_function
 
+
 def get_lookup_charge_res(args):
+    """Get the lookup table for lab dynamic range runs
+    for charge resolution calculation.
+
+    Args:
+        args (argparse.Namespace): Command-line arguments.
+
+    Returns:
+        pandas.DataFrame: Lookup table indexed by filename.
+    """
+
     base_dir = args.input_dir
     lk = pd.read_csv(Path(base_dir) / "table.csv")
     lk["filename"] = lk["name"].apply(lambda s: Path(base_dir) / Path(s).name)
     lk = lk.set_index("filename")[["n_ph", "n_ph_meas", "nsb_meas", "nsb"]]
     return lk
 
+
 def calibrate_extracted_adc(extracted_adc, pix_id, transfer_function, w):
+    """Convert extracted ADC counts to photoelectrons using transfer functions.
+
+    Args:
+        extracted_adc (np.ndarray): Raw extracted ADC counts.
+        pix_id (int): Pixel ID.
+        transfer_function (dict): Calibration interpolation functions.
+        w (int): Window width key for calibration.
+
+    Returns:
+        np.ndarray: Calibrated p.e. values.
+    """
+
     w = str(w)
     if w not in transfer_function:
         return extracted_adc
@@ -158,29 +211,29 @@ def limit_curves(n, nsb, t_w, n_e, sigma_g, enf, pde):
     return sigma_q / q
 
 
-def requirement(n,nsb=0.125):
-    """
-    CTA requirement curve.
+def requirement(n, nsb=0.125, pde=0.46):
+    """Calculate the CTA requirement curve for charge resolution.
 
-    Parameters
-    ----------
-    n : ndarray
-        Number of photons
-    nsb : float
-        Night Sky Background rate (p.e./ns)
+    Args:
+        n (np.ndarray): Number of photons
+        nsb (float, optional): Night Sky Background rate (p.e./ns) Defaults to 0.125.
+
+    Returns:
+        np.ndarray: Requirement curve values.
     """
-    nsb+=0.005
+
+    nsb += 0.005
     t_w = 15
     n_e = 0.87
     sigma_g = 0.1
     enf = 0.2
-    requirement = limit_curves(n, nsb, t_w, n_e, sigma_g, enf, PDE)
+    requirement_curve = limit_curves(n, nsb, t_w, n_e, sigma_g, enf, pde)
 
     max_photons = 4000
     min_photons = 4
-    requirement[(n > max_photons) & (n < min_photons)] = np.nan
+    requirement_curve[(n > max_photons) & (n < min_photons)] = np.nan
 
-    return requirement
+    return requirement_curve
 
 
 def get_pixel_info(pixel_index: int, pix_map: "MappingPixel" = PIX_MAP):
@@ -200,7 +253,7 @@ def get_pixel_info(pixel_index: int, pix_map: "MappingPixel" = PIX_MAP):
     mask = pix_map.index == pixel_index
     if not mask.any():
         print(f"Pixel {pixel_index} not found in the mapping.")
-        return
+        return None, None, None
 
     slot = pix_map.module[mask].item()
     asic = pix_map.asic[mask].item()
@@ -258,19 +311,22 @@ def output_filenames(in_file, out_dir, report="SPE"):
     Args:
         in_file (str): Input run file
         out_dir (str): Output directory
+        report (str, optional): Report type. Defaults to "SPE".
 
     Returns:
-        all_charges_file: Checkpoint file of extracted charges
-        report_filename: Output HTML report filename
-        output_dir: The output directory (defaults to input dir)
+        tuple: ('all_charges_file': Checkpoint file of extracted charges,
+        'report_filename': Output HTML report filename,
+        'output_dir': The output directory (defaults to input dir))
     """
     input_stem = Path(in_file).stem
-    if out_dir:
-        output_dir = out_dir
+    path = Path(in_file)
+    the_directory = path.parent if path.is_file() else path
+    if out_dir is None or out_dir == "":
+        output_dir = the_directory / f"{report}_output"
     else:
-        output_dir = Path(in_file).parent
-    all_charges_file = f"{output_dir}/checkpoints/{input_stem}_checkpoint.npz"
-    report_filename = f"{output_dir}/reports/{input_stem}_{report}.html"
+        output_dir = Path(out_dir)
+    all_charges_file = output_dir / f"checkpoints/{input_stem}_checkpoint.npz"
+    report_filename = output_dir / f"reports/{input_stem}_{report}.html"
     return all_charges_file, report_filename, output_dir
 
 
@@ -281,7 +337,7 @@ def get_value_lists(fitter, n_files):
     corresponding to all the pixels that were fit.
 
     Args:
-        fitter (Fitter): The SPe fitter
+        fitter: SPE fitter instance.
         n_files (int): No. files
 
     Returns:
@@ -289,7 +345,7 @@ def get_value_lists(fitter, n_files):
     """
     value_lists = blank_values(n_files)
 
-    for ipix in range(len(fitter.pixel_values)):
+    for ipix, _ in enumerate(fitter.pixel_values):
         for param, value in fitter.pixel_values[ipix].items():
             value_lists[param].append(value)
         for param, value in fitter.pixel_scores[ipix].items():
@@ -329,7 +385,7 @@ def write_pixel_spe_table(fit, live_pixels, csv_output):
     for i in range(len(peak_valleys)):
         header.append(f"peak_valley_{i}")
 
-    with open(csv_output, "w", newline="") as f:
+    with open(csv_output, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(header)
 
@@ -350,11 +406,24 @@ def write_pixel_spe_table(fit, live_pixels, csv_output):
 
             writer.writerow(row)
 
-def get_source(filename,max_events):
-    if filename.endswith('.tio'):
+
+def get_source(filename, max_events):
+    """Load an EventSource for .tio or simtel files.
+
+    Args:
+        filename (str): Input file path.
+        max_events (int): Maximum events to load.
+
+    Returns:
+        tuple: (EventSource, bool) where bool indicates whether integration
+            correction should be applied.
+    """
+
+    if filename.endswith(".tio"):
         return SSTCAMEventSource(filename, max_events=max_events), False
-    elif 'simtel' in filename:
+    if "simtel" in filename:
         return EventSource(filename, max_events=max_events), True
+    return None
 
 
 def get_file_info(filename):
@@ -369,7 +438,7 @@ def get_file_info(filename):
         str: Text with file info
         int: Number of events in the file
     """
-    if filename.endswith('.tio'):
+    if filename.endswith(".tio"):
         with fits.open(filename) as f:
             n_events = f[1].header["NAXIS2"]
             date_obs = f[0].header["DATE-OBS"]
@@ -377,11 +446,10 @@ def get_file_info(filename):
         tel_id = source.tel_id
     else:
         source = EventSource(filename)
-        n_events = 50000
-        #for _ in source:
-        #    n_events += 1
+        for _ in source:
+            n_events += 1
         date_obs = None
-        tel_id = 1  
+        tel_id = 1
 
     run_text = ""
 
@@ -421,6 +489,7 @@ def get_processing_text(args, mode="SPE"):
 
     Args:
         args (args): Command-line arguments
+        mode (str, optional): Either "SPE" or "res". Defaults to "SPE".
 
     Returns:
         str: Text about the SPE processing.
@@ -430,32 +499,38 @@ def get_processing_text(args, mode="SPE"):
         processing_text += f"<b>No. runs used:</b> {len(args.input_file)}<br>"
         processing_text += f"<b>pe_guess:</b> {args.pe_guess}<br>"
     processing_text += f"<b>max_events:</b> {args.max_events}<br>"
-    processing_text += f"<b>Extraction window width:</b> {not args.window_width}<br>"
+    processing_text += f"<b>Extraction window width:</b> {args.window_width}<br>"
     processing_text += f"<b>Time skew adjusted:</b> {not args.leave_time_skew}<br>"
     processing_text += f"<b>Baseline subtraction:</b> {not args.leave_baseline}<br>"
     if mode == "res":
-        processing_text += (
-            f"<b>Reference SPE extraction:</b> {Path(args.ref_spe).resolve()}<br>"
-        )
+        if args.ref_spe:
+            processing_text += (
+                f"<b>Reference SPE extraction:</b> {Path(args.ref_spe).resolve()}<br>"
+            )
+        else:
+            processing_text += "<b>Reference SPE extraction:</b> None<br>"
     return processing_text
 
 
-def validate_args_shared(parser, args, doing_both=False):
+def validate_args_shared(parser, args):
     """
     Validate command-line arguments that are shared betwee SPE and charge resolution
 
     Args:
-        parser: Argument parser
-        args: Command-line arguments
-        doing_both (bool): If both SPE and charge res are being processed (optional, defaults to False)
+        parser (argparse.ArgumentParser): Parser for error reporting.
+        args (argparse.Namespace): Parsed arguments.
 
     Returns:
-        args: Command-line arguments
+        argparse.Namespace: Command-line arguments
     """
 
     if args.output_dir:
         args.output_dir = os.path.abspath(args.output_dir).rstrip("/")
         if not os.path.isdir(args.output_dir):
+            if args.yes:
+                os.makedirs(args.output_dir, exist_ok=True)
+                print(f"Created directory (auto-confirmed): {args.output_dir}")
+                return args
             response = (
                 input(
                     f"The chosen --output_dir does not exist:\n  {args.output_dir}\n"
@@ -476,12 +551,12 @@ def validate_args_shared(parser, args, doing_both=False):
 
 def validate_args_charge_res(parser, args=None, doing_both=False):
     """
-    Validate command-line arguments for charge resolution calulation
+    Validate command-line arguments for charge resolution calculation
 
     Args:
-        parser: Argument parser
-        args: Command-line arguments (optional, used in sstcam_spe_charge_res)
-        doing_both (bool): If both SPE and charge res are being processed (optional, defaults to False)
+        parser (argparse.ArgumentParser): Parser for error reporting.
+        args (argparse.Namespace, optional): Parsed arguments. Defaults to None.
+        doing_both (bool): Whether SPE and charge-res are run together.
 
     Returns:
         args: Command-line arguments
@@ -489,28 +564,38 @@ def validate_args_charge_res(parser, args=None, doing_both=False):
     if args is None:
         args = parser.parse_args()
 
-    args = validate_args_shared(parser, args, doing_both=doing_both)
+    args = validate_args_shared(parser, args)
 
     input_files = glob(f"{args.input_dir}*.tio")
     if len(input_files) == 0:
         parser.error(f"No .tio files found in input directory: {args.input_dir}")
 
     if not doing_both:
-        if not os.path.isfile(args.ref_spe):
-            parser.error(f"Reference SPE output not found: {args.ref_spe}")
+        if args.ref_spe:
+            if not os.path.isfile(args.ref_spe):
+                parser.error(f"Reference SPE output not found: {args.ref_spe}")
 
     for f in input_files:
         all_charges_file, _, _ = output_filenames(f, args.output_dir)
         checkpoint_exists = os.path.isfile(all_charges_file)
 
         if checkpoint_exists and args.overwrite:
-            print(f"Warning: Will overwrite dynamic range checkpoint data.")
+            print("Warning: Will overwrite dynamic range checkpoint data.")
             break
 
     return args
 
 
 def width_to_pe_guess(w):
+    """Provide a p.e. guess from extraction window width.
+
+    Args:
+        w (int): Extraction window width.
+
+    Returns:
+        int: Estimated p.e. guess.
+    """
+
     if w > 26:
         return 24
 
@@ -533,14 +618,13 @@ def width_to_pe_guess(w):
     return mapping.get(w)
 
 
-def validate_args_spe(parser, args=None, doing_both=False):
+def validate_args_spe(parser, args=None):
     """
     Validate command-line arguments for SPE fitting
 
     Args:
-        parser: Argument parser
-        args: Command-line arguments (optional, used in sstcam_spe_charge_res)
-        doing_both (bool): If both SPE and charge res are being processed (optional, defaults to False)
+        parser (argparse.ArgumentParser): Parser to modify.
+        report (str): Either "spe" or "charge_res".
 
     Returns:
         args: Command-line arguments
@@ -552,7 +636,7 @@ def validate_args_spe(parser, args=None, doing_both=False):
     if not args.input_file:
         parser.error("The --input_file must be specified.")
 
-    args = validate_args_shared(parser, args, doing_both=doing_both)
+    args = validate_args_shared(parser, args)
 
     if args.window_width % 2 != 0 or args.window_width <= 0:
         parser.error("The --window_width must be a positive even number")
@@ -565,7 +649,8 @@ def validate_args_spe(parser, args=None, doing_both=False):
         parser.error("The --pe_guess must be a positive number")
     if abs(auto_pe_guess - args.pe_guess) > 3:
         print(
-            f"Warning: Estimated p.e. guess (for QCAM) is {auto_pe_guess}, your guess is {args.pe_guess}"
+            f"Warning: Estimated p.e. guess (for QCAM) is {auto_pe_guess}, "
+            f"your guess is {args.pe_guess}"
         )
 
     lambda_guesses = None
@@ -639,11 +724,9 @@ def add_parser_args(parser, report):
         )
     if report == "charge_res":
         parser.add_argument(
-            "-i",
-            "--input_dir",
+            "input_dir",
             type=str,
-            default="./",
-            help="Path to input directory (optional, defaults to current directory)",
+            help="Path to input directory",
         )
         parser.add_argument(
             "-r",
@@ -693,6 +776,17 @@ def add_parser_args(parser, report):
         action="store_true",
         help="Do not do rudimentary baseline subtraction",
     )
+    parser.add_argument(
+        "--linear",
+        action="store_true",
+        help="Do not process files in parallel",
+    )
+    parser.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Automatically confirm the creation of the output directory.",
+    )
     return parser
 
 
@@ -702,10 +796,10 @@ def add_args_both(parser):
     charge resolution when run at the same time.
 
     Args:
-        parser (argparse.parser): Command-line argument parser
+        parser (argparse.ArgumentParser): Parser to modify.
 
     Returns:
-        parser (argparse.parser): Command-line argument parser
+        argparse.ArgumentParser: Updated parser.
     """
     parser.add_argument(
         "input_spe_dir", help="Path to the SPE input data file(s) or directory."
@@ -758,8 +852,8 @@ def get_both_args(parser, args=None):
     Get args for both SPE and charge res
 
     Args:
-        parser (argparse.parser): Command-line argument parser
-        args (args, optional): Command-line arguments. Defaults to None.
+        parser (argparse.ArgumentParser): Parser for error reporting.
+        args (argparse.Namespace, optional): Parsed arguments. Defaults to None.
 
     Returns:
         args: Arguments for SPE
@@ -781,7 +875,7 @@ def get_both_args(parser, args=None):
     spe_args = argparse.Namespace(**vars(args))
     spe_args.input_file = [args.input_spe_dir]
     spe_args.output_dir = spe_output_dir
-    spe_args, lambda_guesses = validate_args_spe(parser, args=spe_args, doing_both=True)
+    spe_args, lambda_guesses = validate_args_spe(parser, args=spe_args)
 
     charge_args = argparse.Namespace(**vars(args))
     charge_args.input_dir = args.input_charge_res_dir

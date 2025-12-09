@@ -54,19 +54,21 @@ The processing runs in parallel, and unfortunately cannot show a progress bar. O
 The following options are also available:
 
 * `-p` is the initial guess for extracted photoelectron charge (default automatically choosen depending on window width)
-* `-w` is the number of samples you want to use for the extraction (defaults to 16)
+* `-w` is the number of samples you want to use for the extraction (defaults to 16, must be even)
 * `--leave_time_skew` to *not* choose extraction peaks on a per-pixel basis
 * `--leave_baseline` to *not* perform a rudimentary background subtraction based on the average of the first 5 samples (does not do much)
 * `--peak_helper` to plot the SPE distributions across all pixels to get an idea of p.e. size
 * `--overwrite` which ignore previous extracted charge checkpoints in the same output directory
 * `--max_events` to process only a certain number of events per run (good for quickly testing)
+* `--linear` to process files in linear and not parallel (this gives a progress bar, but is slower)
+* `-y` to automatically create the requested output folder without waiting for permission
 
 Also available as individual functions are:
 ```
-sstcam-pixel-analysis spe
+sstcam-pixel-analysis spe /path/to/spe -o /path/to/output
 ```
 and
 ```
-sstcam-pixel-analysis charge-res
+sstcam-pixel-analysis charge-res /path/to/dynamic_range -o /path/to/output
 ```
 with syntax available with `--help`.
