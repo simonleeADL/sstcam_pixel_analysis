@@ -28,10 +28,10 @@ mamba create -n qcam_analysis python=3.12 pip --yes
 mamba activate qcam_analysis
 ```
 
-Now we install sstcam-waveform, sstcam-telecom, and sstcam-configuration.
+Now we install `sstcam-waveform`, `sstcam-telecom`, and `sstcam-configuration`.
 First I do these steps so it'll automatically authenticate, otherwise it asks for my usename and password three times each.
 
-* Create a gitlab Personal Access Token with read_repository scope
+* Create a gitlab Personal Access Token with `read_repository` scope
 * Create the file `~/.netrc`
 * Add in this information (replace with your own)
 ```
@@ -61,6 +61,15 @@ Then install `ctapipe_io_sstcam`
 ```
 git clone git@gitlab.cta-observatory.org:cta-array-elements/sst/camera/analysis/ctapipe_io_sstcam.git
 cd ctapipe_io_sstcam/
+pip install .
+```
+
+Then finally `sstcam_pixel_analysis`
+
+```
+cd ..
+git clone https://github.com/simonleeADL/sstcam_pixel_analysis.git
+cd sstcam_pixel_analysis/
 pip install .
 ```
 
