@@ -56,7 +56,7 @@ The following options are also available:
 * `-p` is the initial guess for extracted photoelectron charge (default automatically choosen depending on window width)
 * `-w` is the number of samples you want to use for the extraction (defaults to 16, must be even)
 * `--leave_time_skew` to *not* choose extraction peaks on a per-pixel basis
-* `--leave_baseline` to *not* perform a rudimentary background subtraction based on the average of the first 5 samples (does not do much)
+* `--leave_baseline` to *not* perform a rudimentary background subtraction based on the average of the first 20 and last 40 samples
 * `--peak_helper` to plot the SPE distributions across all pixels to get an idea of p.e. size
 * `--overwrite` which ignore previous extracted charge checkpoints in the same output directory
 * `--max_events` to process only a certain number of events per run (good for quickly testing)
