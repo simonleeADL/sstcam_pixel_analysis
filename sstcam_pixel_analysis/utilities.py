@@ -426,7 +426,7 @@ def get_source(filename, max_events):
     return None
 
 
-def get_file_info(filename):
+def get_file_info(filename, max_events):
     """
     Generates text with info about the file.
 
@@ -445,7 +445,11 @@ def get_file_info(filename):
         source = SSTCAMEventSource(filename)
         tel_id = source.tel_id
     else:
-        source = EventSource(filename)
+        n_events = 0
+        if max_events:
+            source = EventSource(filename, max_events=max_events)
+        else:
+            source = EventSource(filename)
         for _ in source:
             n_events += 1
         date_obs = None

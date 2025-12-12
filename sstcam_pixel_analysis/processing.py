@@ -423,9 +423,9 @@ def initialise_data(filename, args):
     Returns:
         FileData: Initialised FileData object
     """
-    tel_id, run_text, n_events = get_file_info(filename)
-
     max_events = args.max_events
+
+    tel_id, run_text, n_events = get_file_info(filename, max_events)
 
     if max_events is None:
         max_events = n_events
